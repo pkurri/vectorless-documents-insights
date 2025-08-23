@@ -1,0 +1,80 @@
+# Windsurf Rules
+
+## core-operating-principles
+- Follow user instructions precisely.
+- Ask for clarification when needed.
+- Identify technical constraints before suggesting solutions.
+- Stay within instruction scope.
+- Report progress and confirm critical decisions.
+
+## project-structure
+Project root: `/`
+Key directories:
+- `/app`: Next.js App Router frontend (TypeScript, Tailwind)
+- `/api`: Python serverless functions (Vercel) e.g., [upload.py](cci:7://file:///Users/pujithareddyraya/workspaces/vectorless/api/upload.py:0:0-0:0), [chat/stream.py](cci:7://file:///Users/pujithareddyraya/workspaces/vectorless/api/chat/stream.py:0:0-0:0)
+- `/backend`: Local FastAPI dev server and services (e.g., [main.py](cci:7://file:///Users/pujithareddyraya/workspaces/vectorless/backend/main.py:0:0-0:0), [llm_service.py](cci:7://file:///Users/pujithareddyraya/workspaces/vectorless/backend/llm_service.py:0:0-0:0))
+- `/docs`: Documentation (e.g., [TECHNOLOGY_INVENTORY.md](cci:7://file:///Users/pujithareddyraya/workspaces/vectorless/docs/TECHNOLOGY_INVENTORY.md:0:0-0:0), [UNKNOWNS.md](cci:7://file:///Users/pujithareddyraya/workspaces/vectorless/docs/UNKNOWNS.md:0:0-0:0))
+- `/memories`: Project/user context docs
+- `/public`: Static assets
+- `/windsurf_workflows`: CI recipes for Windsurf
+Also important:
+- Root configs: [package.json](cci:7://file:///Users/pujithareddyraya/workspaces/vectorless/package.json:0:0-0:0), [tsconfig.json](cci:7://file:///Users/pujithareddyraya/workspaces/vectorless/tsconfig.json:0:0-0:0), [next.config.ts](cci:7://file:///Users/pujithareddyraya/workspaces/vectorless/next.config.ts:0:0-0:0), [vercel.json](cci:7://file:///Users/pujithareddyraya/workspaces/vectorless/vercel.json:0:0-0:0), [requirements.txt](cci:7://file:///Users/pujithareddyraya/workspaces/vectorless/requirements.txt:0:0-0:0), `.env.local`
+
+## technologies
+- Frontend: Next.js 15.4.x, React 19.1.x, TypeScript ^5, Tailwind CSS ^4
+- Backend: Python 3.11, FastAPI >=0.116, Uvicorn >=0.32, Pydantic >=2.10, OpenAI Python SDK >=1.99, PyPDF2 >=3.0
+- Infra: Vercel (routes in [vercel.json](cci:7://file:///Users/pujithareddyraya/workspaces/vectorless/vercel.json:0:0-0:0)), Node.js 20.x (dev/CI)
+- Testing/CI: Type-check via `tsc`, lint via `next lint`, build via `next build`, Python bytecode compile; expand to Jest/Cypress/Ruff as adopted
+
+## coding-standards
+- Naming: files (kebab-case), variables (camelCase), components (PascalCase), tables (snake_case)
+- TypeScript: `strict: true`; avoid `any`; prefer typed utilities/hooks
+- React: functional components and hooks; memoize to prevent unnecessary re-renders
+- Python: type hints and dataclasses/pydantic models; async where appropriate
+- Files < 250 lines; refactor when larger
+- Streaming: use SSE for chat; keep endpoints stateless
+- Env vars: never commit secrets; use `.env.local` locally and Vercel envs in prod
+
+## quality-management
+- ESLint: `next lint` with Next.js config; justify any inline disables
+- Bundle: minimize size; code-split/dynamic import where helpful
+- Accessibility: ensure keyboard navigation and semantic HTML
+- Input validation: validate API payloads (Pydantic) and sanitize user input
+- Performance: avoid heavy work in serverless handlers; offload to streaming/async
+
+## development-workflow
+- Stop related servers before starting new ones
+- Commands:
+  - Web: `npm run dev` (Turbopack)
+  - Backend local: `npm run backend` (FastAPI script), or `npm run dev:all` to run both
+- Keep parity between `/api` serverless handlers and `/backend` FastAPI routes
+- Test locally before pushing; maintain consistency with established patterns
+
+## version-control
+- No unstaged files after commit
+- No new branches without request
+- Do not commit `.env*`
+- Confirm before overwriting `.env.local`
+
+## best-practices
+- Avoid one-time scripts in permanent files
+- No mocking except in tests
+- Reuse existing utilities/components before adding new ones
+- Remove outdated code when introducing new solutions
+
+## error-handling
+- Analyze error messages and scope impact
+- Address root cause; add targeted logging (no PII)
+- Implement tests where applicable
+- Record issues in `/docs/ERROR_LOG.md`
+- Propose preventive measures and automation
+
+## preventing-hallucinations
+- Verify suggestions against the codebase: `app/`, `api/`, `backend/`, `docs/`
+- Avoid assuming external APIs unless documented in `/docs` or configs
+- Cross-check with [docs/TECHNOLOGY_INVENTORY.md](cci:7://file:///Users/pujithareddyraya/workspaces/vectorless/docs/TECHNOLOGY_INVENTORY.md:0:0-0:0) and [vercel.json](cci:7://file:///Users/pujithareddyraya/workspaces/vectorless/vercel.json:0:0-0:0)
+
+## reinforcing-learning
+- Track recent changes via git history
+- Store feedback in `/docs/FEEDBACK_LOG.md`
+- Maintain Adaptive Project State (APS) with task progression and lessons learned
