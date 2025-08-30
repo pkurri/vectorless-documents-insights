@@ -35,6 +35,8 @@ interface Message {
       total_cost?: number;
     };
     model?: string;
+    provider?: string;
+    hfModelId?: string;
   };
 }
 
@@ -68,6 +70,8 @@ export default function StatelessChatSection({
   const [isLoading, setIsLoading] = useState(false);
   const [showDocuments, setShowDocuments] = useState(true);
   const [selectedModel, setSelectedModel] = useState<string>('gpt-5-mini');
+  const [selectedProvider, setSelectedProvider] = useState<'openai' | 'huggingface'>('openai');
+  const [hfModelId, setHfModelId] = useState<string>('');
   const [isEditingDescription, setIsEditingDescription] = useState(false);
   const [editedDescription, setEditedDescription] = useState('');
   const [isUploadingFiles, setIsUploadingFiles] = useState(false);
@@ -88,6 +92,8 @@ export default function StatelessChatSection({
     pageNumber: number;
     filename: string;
   } | null>(null);
+  // Backend info (provider/model)
+  const [backendInfo, setBackendInfo] = useState<{ provider?: string; model?: string } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -153,6 +159,35 @@ export default function StatelessChatSection({
     scrollToBottom();
   }, [messages]);
 
+  // Fetch backend health to show provider/model in UI
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${config.apiBaseUrl}/health`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) {
+          setBackendInfo({ provider: data?.provider, model: data?.model });
+          if (data?.provider === 'huggingface') {
+            setSelectedProvider('huggingface');
+            if (typeof data?.model === 'string' && data.model) {
+              setHfModelId(data.model);
+            }
+          } else if (data?.provider === 'openai') {
+            setSelectedProvider('openai');
+            if (typeof data?.model === 'string' && data.model) {
+              setSelectedModel(data.model);
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   const handleSendMessage = async () => {
     if (!currentQuestion.trim() || isLoading) return;
 
@@ -213,6 +248,8 @@ export default function StatelessChatSection({
           documents: documents,
           description: description,
           model: selectedModel,
+          provider: selectedProvider,
+          ...(selectedProvider === 'huggingface' && hfModelId ? { hf_model_id: hfModelId } : {}),
           chat_history: messages.map(msg => ({
             role: msg.role,
             content: msg.content,
@@ -310,7 +347,9 @@ export default function StatelessChatSection({
                           ...msg.metadata,
                           timing: data.timing_breakdown,
                           costs: data.cost_breakdown,
-                          model: selectedModel
+                          model: selectedModel,
+                          provider: selectedProvider,
+                          ...(selectedProvider === 'huggingface' && hfModelId ? { hfModelId } : {}),
                         }
                       }
                     : msg
@@ -894,14 +933,20 @@ export default function StatelessChatSection({
     <div className="bg-white rounded-lg shadow-lg flex flex-col h-full">
       {/* Header */}
       <div className="border-b border-gray-200 p-4">
-        <div className="flex justify-between items-center mb-3">
-          <div className="flex-1">
-            <h2 className="text-xl font-semibold text-gray-800">Chat with your documents</h2>
-            <div className="flex items-center space-x-2 mt-1">
-              <p className="text-sm text-gray-600">
-                {documents.length} document(s) {documents.length > 0 ? '•' : ''}
-              </p>
-              {isEditingDescription ? (
+          <div className="flex justify-between items-center mb-3">
+            <div className="flex-1">
+              <h2 className="text-xl font-semibold text-gray-800">Chat with your documents</h2>
+              <div className="flex items-center space-x-2 mt-1">
+                <p className="text-sm text-gray-600">
+                  {documents.length} document(s) {documents.length > 0 ? '•' : ''}
+                </p>
+                {backendInfo?.provider && (
+                  <span className="text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded border border-gray-200" title="Active LLM provider and model">
+                    {backendInfo.provider === 'huggingface' ? 'Hugging Face' : backendInfo.provider}
+                    {backendInfo.model ? ` • ${backendInfo.model}` : ''}
+                  </span>
+                )}
+                {isEditingDescription ? (
                 <div className="flex items-center space-x-2 flex-1">
                   <input
                     type="text"
@@ -1495,8 +1540,14 @@ export default function StatelessChatSection({
                     {message.metadata.relevantPagesCount && (
                       <span><span className="font-medium">Pages:</span> {message.metadata.relevantPagesCount}</span>
                     )}
+                    {message.metadata.provider && (
+                      <span><span className="font-medium">Provider:</span> {message.metadata.provider === 'huggingface' ? 'Hugging Face' : message.metadata.provider}</span>
+                    )}
                     {message.metadata.model && (
                       <span><span className="font-medium">Model:</span> {message.metadata.model}</span>
+                    )}
+                    {message.metadata.hfModelId && (
+                      <span><span className="font-medium">HF Model:</span> {message.metadata.hfModelId}</span>
                     )}
                     {message.metadata.timing?.total_time && (
                       <span><span className="font-medium">Time:</span> {message.metadata.timing.total_time.toFixed(1)}s</span>
@@ -1521,36 +1572,83 @@ export default function StatelessChatSection({
 
       {/* Input */}
       <div className="border-t border-gray-200 p-4">
-        {/* Model Selection */}
-        <div className="mb-3">
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            AI Model:
-          </label>
-          <div className="flex space-x-4">
-            <label className="flex items-center space-x-2">
+        {/* Provider & Model Selection */}
+        <div className="mb-3 space-y-3">
+          {/* Provider Toggle */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Provider:</label>
+            <div className="flex items-center gap-6">
+              <label className="flex items-center space-x-2">
+                <input
+                  type="radio"
+                  name="provider"
+                  value="openai"
+                  checked={selectedProvider === 'openai'}
+                  onChange={() => setSelectedProvider('openai')}
+                  disabled={isLoading}
+                  className="text-blue-600 focus:ring-blue-500"
+                />
+                <span className="text-sm text-gray-700">OpenAI</span>
+              </label>
+              <label className="flex items-center space-x-2">
+                <input
+                  type="radio"
+                  name="provider"
+                  value="huggingface"
+                  checked={selectedProvider === 'huggingface'}
+                  onChange={() => setSelectedProvider('huggingface')}
+                  disabled={isLoading}
+                  className="text-blue-600 focus:ring-blue-500"
+                />
+                <span className="text-sm text-gray-700">Hugging Face</span>
+              </label>
+            </div>
+          </div>
+
+          {/* HF Model ID (visible for Hugging Face) */}
+          {selectedProvider === 'huggingface' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">HF Model ID (optional override)</label>
               <input
-                type="radio"
-                name="model"
-                value="gpt-5-mini"
-                checked={selectedModel === 'gpt-5-mini'}
-                onChange={(e) => setSelectedModel(e.target.value)}
+                type="text"
+                value={hfModelId}
+                onChange={(e) => setHfModelId(e.target.value)}
+                placeholder={backendInfo?.provider === 'huggingface' && backendInfo?.model ? backendInfo.model : 'e.g. mistralai/Mistral-7B-Instruct'}
                 disabled={isLoading}
-                className="text-blue-600 focus:ring-blue-500"
+                className="w-full px-3 py-2 text-gray-700 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               />
-              <span className="text-sm text-gray-700">GPT-5 Mini (Faster, Lower Cost)</span>
-            </label>
-            <label className="flex items-center space-x-2">
-              <input
-                type="radio"
-                name="model"
-                value="gpt-5"
-                checked={selectedModel === 'gpt-5'}
-                onChange={(e) => setSelectedModel(e.target.value)}
-                disabled={isLoading}
-                className="text-blue-600 focus:ring-blue-500"
-              />
-              <span className="text-sm text-gray-700">GPT-5 (Higher Quality, Higher Cost)</span>
-            </label>
+            </div>
+          )}
+
+          {/* OpenAI Model Radios */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">OpenAI Model:</label>
+            <div className="flex space-x-4">
+              <label className="flex items-center space-x-2">
+                <input
+                  type="radio"
+                  name="model"
+                  value="gpt-5-mini"
+                  checked={selectedModel === 'gpt-5-mini'}
+                  onChange={(e) => setSelectedModel(e.target.value)}
+                  disabled={isLoading || selectedProvider !== 'openai'}
+                  className="text-blue-600 focus:ring-blue-500"
+                />
+                <span className="text-sm text-gray-700">GPT-5 Mini (Faster, Lower Cost)</span>
+              </label>
+              <label className="flex items-center space-x-2">
+                <input
+                  type="radio"
+                  name="model"
+                  value="gpt-5"
+                  checked={selectedModel === 'gpt-5'}
+                  onChange={(e) => setSelectedModel(e.target.value)}
+                  disabled={isLoading || selectedProvider !== 'openai'}
+                  className="text-blue-600 focus:ring-blue-500"
+                />
+                <span className="text-sm text-gray-700">GPT-5 (Higher Quality, Higher Cost)</span>
+              </label>
+            </div>
           </div>
         </div>
         

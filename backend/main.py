@@ -53,6 +53,52 @@ class ScanFolderRequest(BaseModel):
     extensions: list[str] | None = None
 
 
+# Optional startup warmup to reduce HF endpoint cold starts
+@app.on_event("startup")
+async def startup_warmup():
+    try:
+        # Only attempt when HF is configured
+        use_endpoint = os.environ.get("HF_USE_ENDPOINT", "").strip().lower() in ("1", "true", "yes", "on")
+        provider_env = os.environ.get("LLM_PROVIDER", "").strip().lower()
+        hf_base = os.environ.get("HF_API_BASE", "").strip()
+        hf_token = os.environ.get("HF_API_TOKEN") or os.environ.get("HF_TOKEN")
+        warmup_on_start = os.environ.get("HF_WARMUP_ON_START", "true").strip().lower() in ("1", "true", "yes", "on")
+        if warmup_on_start and hf_base and hf_token and (provider_env == "huggingface" or use_endpoint):
+            async def _do_warm():
+                try:
+                    svc = LLMService()
+                    # Force HF provider if env says so
+                    if provider_env:
+                        svc.apply_overrides(provider=provider_env)
+                    prompt = os.environ.get("HF_WARMUP_PROMPT", "ok")
+                    max_tokens = int(os.environ.get("HF_WARMUP_TOKENS", "8"))
+                    # Time-bound warmup
+                    await asyncio.wait_for(svc._hf_generate(prompt, max_new_tokens=max_tokens), timeout=30.0)
+                    print("🔥 HF warmup completed")
+                except Exception as e:
+                    print(f"(warmup) HF warmup skipped/failed: {e}")
+            asyncio.create_task(_do_warm())
+    except Exception as e:
+        print(f"Startup warmup init error: {e}")
+
+
+@app.get("/warmup")
+async def manual_warmup():
+    """Manually trigger a short HF call to warm the endpoint."""
+    try:
+        provider_env = os.environ.get("LLM_PROVIDER", "").strip().lower()
+        if provider_env == "openai":
+            return {"status": "skipped", "provider": provider_env}
+        svc = LLMService()
+        if provider_env:
+            svc.apply_overrides(provider=provider_env)
+        prompt = os.environ.get("HF_WARMUP_PROMPT", "ok")
+        max_tokens = int(os.environ.get("HF_WARMUP_TOKENS", "8"))
+        await asyncio.wait_for(svc._hf_generate(prompt, max_new_tokens=max_tokens), timeout=45.0)
+        return {"status": "warmed"}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"warmup_failed: {e}")
+
 class SMBScanRequest(BaseModel):
     server: str  # hostname or IP
     share: str   # SMB share name
@@ -138,7 +184,20 @@ async def chat_stream(request: ChatRequest):
 
     async def stream_response():
         try:
+            # Create a fresh service per request and apply overrides
+            service = LLMService()
+            try:
+                service.apply_overrides(
+                    provider=request.provider,
+                    model=request.model,
+                    hf_model_id=request.hf_model_id,
+                )
+            except Exception as _:
+                # Proceed with defaults if overrides fail
+                pass
+
             total_cost = 0.0
+            heartbeat_interval = getattr(service, "heartbeat_interval", 5.0)
 
             # Convert DocumentData to the format expected by LLMService
             documents_dict = []
@@ -170,12 +229,33 @@ async def chat_stream(request: ChatRequest):
             yield f"data: {json.dumps(doc_selection_status)}\n\n"
 
             print("⏱️ Step 1: Starting document selection...")
-            selected_docs, step1_cost = await llm_service.select_documents(
-                request.description,
-                documents_dict,
-                request.question,
-                request.chat_history,
+            # Run document selection with periodic heartbeats
+            select_task = asyncio.create_task(
+                service.select_documents(
+                    request.description,
+                    documents_dict,
+                    request.question,
+                    request.chat_history,
+                )
             )
+            while True:
+                try:
+                    selected_docs, step1_cost = await asyncio.wait_for(
+                        asyncio.shield(select_task), timeout=heartbeat_interval
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    # Heartbeat to keep connection alive
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+                except BaseException as e:
+                    # Ensure task is cancelled and report error to client
+                    try:
+                        select_task.cancel()
+                    except Exception:
+                        pass
+                    error_data = {"type": "error", "error": f"document_selection_failed: {str(e)}"}
+                    yield f"data: {json.dumps(error_data)}\n\n"
+                    return
             total_cost += step1_cost
             step1_time = time.time() - step1_start
             print(f"✅ Step 1: Document selection completed in {step1_time:.2f}s")
@@ -208,7 +288,7 @@ async def chat_stream(request: ChatRequest):
             # Process documents in parallel to maintain filename context
 
             async def process_document(doc):
-                return await llm_service.find_relevant_pages(
+                return await service.find_relevant_pages(
                     doc["pages"],
                     request.question,
                     doc["filename"],
@@ -218,8 +298,28 @@ async def chat_stream(request: ChatRequest):
             # Create tasks for all documents
             doc_tasks = [process_document(doc) for doc in selected_docs]
 
-            # Wait for all documents to complete
-            doc_results = await asyncio.gather(*doc_tasks)
+            # Wait for all documents to complete with periodic heartbeats
+            gather_task = asyncio.gather(*doc_tasks, return_exceptions=False)
+            while True:
+                try:
+                    doc_results = await asyncio.wait_for(
+                        asyncio.shield(gather_task), timeout=heartbeat_interval
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    # Heartbeat to keep connection alive
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+                except BaseException as e:
+                    # Cancel any running tasks and report error
+                    try:
+                        for t in doc_tasks:
+                            if hasattr(t, 'cancel'):
+                                t.cancel()
+                    except Exception:
+                        pass
+                    error_data = {"type": "error", "error": f"page_selection_failed: {str(e)}"}
+                    yield f"data: {json.dumps(error_data)}\n\n"
+                    return
 
             # Combine results
             all_relevant_pages = []
@@ -257,17 +357,25 @@ async def chat_stream(request: ChatRequest):
             print("⏱️ Step 3: Starting answer generation...")
 
             # Stream the answer generation
-            async for chunk in llm_service.generate_answer_stream(
-                relevant_pages, request.question, request.chat_history, request.model
-            ):
-                if chunk.get("type") == "content":
-                    content_data = {
-                        "type": "content",
-                        "content": chunk["content"],
-                    }
-                    yield f"data: {json.dumps(content_data)}\n\n"
-                elif chunk.get("type") == "cost":
-                    total_cost += chunk["cost"]
+            try:
+                async for chunk in service.generate_answer_stream(
+                    relevant_pages, request.question, request.chat_history, request.model
+                ):
+                    if chunk.get("type") == "content":
+                        content_data = {
+                            "type": "content",
+                            "content": chunk["content"],
+                        }
+                        yield f"data: {json.dumps(content_data)}\n\n"
+                    elif chunk.get("type") == "cost":
+                        total_cost += chunk["cost"]
+                    elif chunk.get("type") == "heartbeat":
+                        # Forward heartbeat to client
+                        yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+            except BaseException as e:
+                error_data = {"type": "error", "error": f"answer_generation_failed: {str(e)}"}
+                yield f"data: {json.dumps(error_data)}\n\n"
+                return
 
             step3_time = time.time() - step3_start
             print(f"✅ Step 3: Answer generation completed in {step3_time:.2f}s")
@@ -295,18 +403,18 @@ async def chat_stream(request: ChatRequest):
                 f"🎉 Request completed in {total_time:.2f}s, total cost: ${total_cost:.4f}"
             )
 
-        except Exception as e:
+        except BaseException as e:
             error_data = {"type": "error", "error": str(e)}
             yield f"data: {json.dumps(error_data)}\n\n"
             print(f"❌ Error in stream_response: {str(e)}")
 
     return StreamingResponse(
         stream_response(),
-        media_type="text/plain",
+        media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "Content-Type": "text/event-stream",
+            "X-Accel-Buffering": "no",
         },
     )
 
@@ -314,7 +422,16 @@ async def chat_stream(request: ChatRequest):
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {"status": "healthy", "mode": "stateless"}
+    # Expose active LLM provider and model so the UI can reflect backend configuration
+    try:
+        provider = llm_service.provider
+        model = (
+            llm_service.hf_model_id if getattr(llm_service, "provider", "openai") == "huggingface" else llm_service.model
+        )
+    except Exception:
+        provider = "unknown"
+        model = None
+    return {"status": "healthy", "mode": "stateless", "provider": provider, "model": model}
 
 
 @app.post("/scan-folder", response_model=UploadResponse)

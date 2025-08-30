@@ -1,5 +1,14 @@
 import json
+import os
+import sys
 from http.server import BaseHTTPRequestHandler
+
+# Add backend path to import LLMService
+backend_path = os.path.join(os.path.dirname(__file__), "..", "..", "backend")
+if backend_path not in sys.path:
+    sys.path.insert(0, backend_path)
+
+from llm_service import LLMService
 
 
 class handler(BaseHTTPRequestHandler):
@@ -12,7 +21,17 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
 
-        response_data = {"status": "healthy", "mode": "stateless"}
+        try:
+            svc = LLMService()
+            provider = getattr(svc, "provider", "unknown")
+            model = (
+                svc.hf_model_id if provider == "huggingface" else getattr(svc, "model", None)
+            )
+        except Exception:
+            provider = "unknown"
+            model = None
+
+        response_data = {"status": "healthy", "mode": "stateless", "provider": provider, "model": model}
         self.wfile.write(json.dumps(response_data).encode())
 
     def do_OPTIONS(self):

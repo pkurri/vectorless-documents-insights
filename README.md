@@ -84,10 +84,11 @@ graph TD
 - **Lucide React**: Beautiful, consistent icons
 
 ### Backend
+
 - **FastAPI (local dev)**: Endpoints `/upload`, `/chat/stream`, `/scan-folder`, `/scan-smb`
 - **Vercel Python serverless**: Endpoints `/api/upload`, `/api/chat/stream`, `/api/ingest/drive`, `/api/health`
 - **Document processing**: PyPDF2 (PDF), python-docx (DOCX), python-pptx (PPTX), openpyxl (XLSX), CSV
-- **OpenAI SDK**: Advanced LLMs for reasoning and streaming
+- **LLM Providers**: OpenAI SDK (default) or Hugging Face Inference API (optional)
 - **Chunked Processing**: Handles large uploads efficiently
 
 ### Infrastructure
@@ -110,10 +111,23 @@ npm install
 ```
 
 ### 2. Environment Setup
+
 Create `.env.local`:
+
 ```bash
-# Required for both local and Vercel
+# Provider selection (default: openai)
+LLM_PROVIDER=openai # or huggingface
+
+# OpenAI (used when LLM_PROVIDER=openai)
 OPENAI_API_KEY=your_openai_api_key_here
+OPENAI_MODEL=gpt-5-mini
+
+# Hugging Face (used when LLM_PROVIDER=huggingface)
+# Get a token from https://huggingface.co/settings/tokens
+HF_API_TOKEN=your_hf_api_token
+HF_MODEL_ID=meta-llama/Meta-Llama-3.1-8B-Instruct
+HF_API_BASE=https://api-inference.huggingface.co/models
+HF_TEMPERATURE=0.3
 
 # For local FastAPI backend (defaults to http://localhost:8000 if omitted)
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
@@ -123,6 +137,7 @@ NEXT_PUBLIC_GOOGLE_CLIENT_ID=your_google_oauth_client_id
 ```
 
 ### 3. Run Locally
+
 ```bash
 # Start only the frontend (Next.js)
 npm run dev
@@ -139,8 +154,23 @@ Visit http://localhost:3000. The frontend will call the backend at `NEXT_PUBLIC_
 
 1. Push to GitHub
 2. Connect to Vercel
-3. Set environment variable: `OPENAI_API_KEY=your_key`
+3. Set environment variables based on your provider:
+   - If using OpenAI: `OPENAI_API_KEY=your_key` (optionally `OPENAI_MODEL`)
+   - If using Hugging Face: `LLM_PROVIDER=huggingface`, `HF_API_TOKEN`, `HF_MODEL_ID` (optionally `HF_API_BASE`, `HF_TEMPERATURE`)
 4. Deploy! ✅
+
+## 🔌 Model Provider Selection
+
+You can switch the LLM provider without code changes using `LLM_PROVIDER` in `.env.local`:
+
+- `openai` (default): uses `OPENAI_API_KEY` and `OPENAI_MODEL` for streaming chat via OpenAI SDK.
+- `huggingface`: calls Hugging Face Inference API using `HF_API_TOKEN` and `HF_MODEL_ID`. The backend simulates streaming by chunking the generated text.
+
+Recommended open-source models for `HF_MODEL_ID`:
+
+- `meta-llama/Meta-Llama-3.1-8B-Instruct` (balanced quality/latency)
+- `mistralai/Mixtral-8x7B-Instruct-v0.1` (higher quality, heavier)
+- `HuggingFaceH4/zephyr-7b-beta` (lightweight instruct)
 
 ## 📖 How to Use
 

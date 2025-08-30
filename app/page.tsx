@@ -99,7 +99,7 @@ export default function Home() {
         <div className="text-center mb-8 relative">
           {/* GitHub Icon */}
           <a
-            href="https://github.com/roe-ai/vectorless-chatbot"
+            href="https://github.com/pkurri/vectorless-documents-insights"
             target="_blank"
             rel="noopener noreferrer"
             className="absolute top-0 right-0 text-gray-600 hover:text-gray-900 transition-colors flex items-center space-x-2 group"

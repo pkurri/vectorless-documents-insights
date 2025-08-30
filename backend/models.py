@@ -27,6 +27,8 @@ class ChatRequest(BaseModel):
     description: str  # Collection description
     chat_history: Optional[List[ChatMessage]] = []
     model: Optional[str] = "gpt-5-mini"
+    provider: Optional[str] = None  # 'openai' or 'huggingface'
+    hf_model_id: Optional[str] = None  # Optional per-request HF model override
 
 
 class ChatResponse(BaseModel):

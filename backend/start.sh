@@ -49,5 +49,6 @@ fi
 set +a
 
 # Start the server
-echo "Starting FastAPI server in debug mode..."
-python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000 --log-level debug
+PORT=${BACKEND_PORT:-8000}
+echo "Starting FastAPI server in debug mode on port ${PORT}..."
+python -m uvicorn main:app --reload --host 0.0.0.0 --port "$PORT" --log-level debug
