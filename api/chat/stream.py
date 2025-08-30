@@ -35,8 +35,16 @@ class handler(BaseHTTPRequestHandler):
             # Parse request using ChatRequest model
             request = ChatRequest(**request_data)
 
-            # Initialize LLM service
+            # Initialize LLM service and apply per-request overrides
             llm_service = LLMService()
+            try:
+                llm_service.apply_overrides(
+                    provider=request.provider,
+                    model=request.model,
+                    hf_model_id=request.hf_model_id,
+                )
+            except Exception:
+                pass
 
             # Process the chat request and stream response
             asyncio.run(self._process_chat_request(request, llm_service))
@@ -65,6 +73,7 @@ class handler(BaseHTTPRequestHandler):
 
         try:
             total_cost = 0.0
+            heartbeat_interval = getattr(llm_service, "heartbeat_interval", 5.0)
 
             # Convert DocumentData to the format expected by LLMService
             documents_dict = []
@@ -96,17 +105,29 @@ class handler(BaseHTTPRequestHandler):
             self._write_sse(doc_selection_status)
 
             print("⏱️ Step 1: Starting document selection...")
-            # Step 1 timeout guard
+            # Step 1 with periodic heartbeats while waiting
             step1_timeout = float(os.environ.get("CHAT_STEP1_TIMEOUT", "60"))
-            selected_docs, step1_cost = await asyncio.wait_for(
+            select_task = asyncio.create_task(
                 llm_service.select_documents(
                     request.description,
                     documents_dict,
                     request.question,
                     request.chat_history,
-                ),
-                timeout=step1_timeout,
+                )
             )
+            step1_deadline = time.time() + step1_timeout
+            while True:
+                remaining = max(0.0, step1_deadline - time.time())
+                if remaining == 0.0:
+                    raise asyncio.TimeoutError("document selection timed out")
+                try:
+                    selected_docs, step1_cost = await asyncio.wait_for(
+                        select_task, timeout=min(heartbeat_interval, remaining)
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    # Heartbeat to keep client connection alive
+                    self._write_sse({"type": "heartbeat"})
             total_cost += step1_cost
             step1_time = time.time() - step1_start
             msg = f"✅ Step 1: Document selection completed in {step1_time:.2f}s"
@@ -159,11 +180,20 @@ class handler(BaseHTTPRequestHandler):
 
             doc_tasks = [safe_process(doc) for doc in selected_docs]
 
-            # Bound overall step 2 time as well
-            doc_results = await asyncio.wait_for(
-                asyncio.gather(*doc_tasks, return_exceptions=False),
-                timeout=step2_timeout,
-            )
+            # Bound overall step 2 time as well, with periodic heartbeats
+            step2_deadline = time.time() + step2_timeout
+            gather_task = asyncio.create_task(asyncio.gather(*doc_tasks, return_exceptions=False))
+            while True:
+                remaining = max(0.0, step2_deadline - time.time())
+                if remaining == 0.0:
+                    raise asyncio.TimeoutError("page selection timed out")
+                try:
+                    doc_results = await asyncio.wait_for(
+                        gather_task, timeout=min(heartbeat_interval, remaining)
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    self._write_sse({"type": "heartbeat"})
 
             # Combine results
             all_relevant_pages = []
@@ -214,6 +244,9 @@ class handler(BaseHTTPRequestHandler):
                     self._write_sse(content_data)
                 elif chunk.get("type") == "cost":
                     total_cost += chunk["cost"]
+                elif chunk.get("type") == "heartbeat":
+                    # Forward heartbeat to client
+                    self._write_sse({"type": "heartbeat"})
 
             step3_time = time.time() - step3_start
             msg = f"✅ Step 3: Answer generation completed in {step3_time:.2f}s"

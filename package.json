@@ -1,6 +1,7 @@
 {
   "name": "vectorless-documents-insights",
   "version": "0.1.0",
+  "author": "prasad.kurri@gmail.com",
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
